@@ -1,14 +1,16 @@
 name: Publish test website
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: Release with the verified github-pages.zip artifact
+      artifact_url:
+        description: Temporary download URL of the verified github-pages.zip build
         required: true
-        default: preview-2026-11-12
+        type: string
+      artifact_sha256:
+        description: SHA-256 digest from the successful source build
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -29,10 +31,13 @@ jobs:
     steps:
       - name: Download compiled website
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
-        run: gh release download "$RELEASE_TAG" --pattern github-pages.zip --dir bundle
+          ARTIFACT_URL: ${{ inputs.artifact_url }}
+          ARTIFACT_SHA256: ${{ inputs.artifact_sha256 }}
+        run: |
+          echo "::add-mask::$ARTIFACT_URL"
+          mkdir bundle
+          curl --fail --location --retry 2 --output bundle/github-pages.zip "$ARTIFACT_URL"
+          printf '%s  %s\n' "$ARTIFACT_SHA256" "bundle/github-pages.zip" | sha256sum --check -
       - name: Unpack and require noindex on every page
         run: |
           python3 - <<'PY'
