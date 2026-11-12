@@ -1,0 +1,79 @@
+name: Publish test website
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release with the verified github-pages.zip artifact
+        required: true
+        default: preview-2026-11-12
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download compiled website
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: gh release download "$RELEASE_TAG" --pattern github-pages.zip --dir bundle
+      - name: Unpack and require noindex on every page
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from html.parser import HTMLParser
+          import shutil, tarfile, zipfile
+
+          with zipfile.ZipFile('bundle/github-pages.zip') as archive:
+              assert archive.namelist() == ['artifact.tar'], 'Unexpected build archive'
+              with archive.open('artifact.tar') as source, open('bundle/artifact.tar', 'wb') as target:
+                  shutil.copyfileobj(source, target)
+          with tarfile.open('bundle/artifact.tar') as archive:
+              archive.extractall('public', filter='data')
+
+          class Robots(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.rules = []
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+                  if tag == 'meta' and attrs.get('name', '').lower() == 'robots':
+                      self.rules.append(set(attrs.get('content', '').lower().replace(',', ' ').split()))
+
+          root = Path('public')
+          required = ['index.html', '404.html', 'prices/index.html', 'schedule/index.html',
+                      'spaces/fight/index.html', 'spaces/gym/index.html', 'spaces/sauna/index.html',
+                      'spaces/fight/gallery-preview/index.html']
+          for name in required:
+              assert (root / name).is_file(), f'Missing page: {name}'
+          pages = list(root.rglob('*.html'))
+          assert len(pages) == 14, f'Unexpected HTML count: {len(pages)}'
+          for page in pages:
+              parser = Robots()
+              parser.feed(page.read_text())
+              assert parser.rules and all('noindex' in r and 'index' not in r for r in parser.rules), f'Indexing allowed: {page}'
+          print(f'Verified noindex on {len(pages)} HTML files.')
+          PY
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - name: Deploy test website
+        id: deployment
+        uses: actions/deploy-pages@v4
